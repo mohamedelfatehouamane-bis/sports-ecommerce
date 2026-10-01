@@ -1,9 +1,41 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { formatDZD } from '@/lib/utils/currency'
+import { ProductImage } from '@/components/ProductImage'
+
+import { Header } from '@/components/Header'
+import { Footer } from '@/components/Footer'
+import { MobileBottomNav } from '@/components/MobileBottomNav'
+import { useTranslation } from '@/components/language-context'
+import { LayoutGrid, Shirt, Dumbbell, Backpack, SportShoe, ShoppingCart } from 'lucide-react'
+
+const SoccerBallIcon = (props: React.SVGProps<SVGSVGElement>) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="24"
+    height="24"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    {...props}
+  >
+    <circle cx="12" cy="12" r="10" />
+    <path d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+    <path d="m10.6 9.6-3.8-3.3" />
+    <path d="m13.4 9.6 3.8-3.3" />
+    <path d="m9 15-4.5 1" />
+    <path d="m15 15 4.5 1" />
+    <path d="M12 15v4.5" />
+  </svg>
+)
 
 export const dynamic = 'force-dynamic'
 
@@ -12,18 +44,11 @@ interface Product {
   name: string
   slug: string
   description: string
-  base_price: number
-  sale_price: number | null
-  image_url: string
-  featured: boolean
-  category_id: string
-  categories: { name: string; slug: string }
-  product_variants: Array<{
-    id: string
-    sku: string
-    price: number
-    quantity_in_stock: number
-  }>
+  price: number | string
+  originalPrice?: number | string | null
+  stock: number
+  imageUrl: string
+  category: { name: string; slug: string }
 }
 
 interface PaginatedResponse {
@@ -34,15 +59,16 @@ interface PaginatedResponse {
   totalPages: number
 }
 
-export default function ProductsPage() {
+function ProductsPageContent() {
+  const { t } = useTranslation()
+  const searchParams = useSearchParams()
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
-  const [searchTerm, setSearchTerm] = useState('')
-  const [selectedCategory, setSelectedCategory] = useState('')
-  const [sortBy, setSortBy] = useState('newest')
+  const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '')
+  const [selectedCategory, setSelectedCategory] = useState(searchParams.get('category') || '')
+  const [sortBy, setSortBy] = useState(searchParams.get('sort') || 'newest')
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
-  const [categories, setCategories] = useState<Array<{ name: string; slug: string }>>([])
 
   const fetchProducts = useCallback(async () => {
     setLoading(true)
@@ -54,15 +80,16 @@ export default function ProductsPage() {
       params.append('page', page.toString())
 
       const response = await fetch(`/api/products?${params}`)
-      const data: PaginatedResponse = await response.json()
-      setProducts(data.products)
-      setTotalPages(data.totalPages)
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch products')
+      }
 
-      // Extract unique categories
-      const uniqueCategories = Array.from(
-        new Map(data.products.map((p) => [p.categories.slug, p.categories])).values()
-      )
-      setCategories(uniqueCategories)
+      const data = await response.json()
+      const fetchedProducts = data.products || []
+      
+      setProducts(fetchedProducts)
+      setTotalPages(data.totalPages || 1)
     } catch (error) {
       console.error('Failed to fetch products:', error)
     } finally {
@@ -78,62 +105,68 @@ export default function ProductsPage() {
     fetchProducts()
   }, [fetchProducts])
 
-  const displayPrice = (product: Product) => {
-    return product.sale_price ? product.sale_price : product.base_price
-  }
-
   const inStock = (product: Product) => {
-    return product.product_variants.some((v) => v.quantity_in_stock > 0)
+    return product.stock > 0
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <nav className="border-b border-border bg-card shadow-sm">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
-          <Link href="/" className="text-xl font-bold text-foreground">
-            Sports Shop
-          </Link>
-          <Link href="/dashboard">
-            <Button variant="outline" size="sm">
-              Dashboard
-            </Button>
-          </Link>
-        </div>
-      </nav>
+    <div className="min-h-screen bg-transparent transition-colors duration-200 flex flex-col">
+      <Header />
 
-      <div className="mx-auto max-w-7xl px-6 py-8">
-        <h1 className="mb-8 text-4xl font-bold text-foreground">Products</h1>
+      <div className="mx-auto max-w-7xl px-6 py-8 flex-1 w-full">
+        <h1 className="mb-8 text-4xl font-extrabold theme-text-white">{t('products.title')}</h1>
 
         {/* Filters */}
-        <div className="mb-8 space-y-4">
+        <div className="mb-8 space-y-6">
+          <div className="flex overflow-x-auto gap-3 hide-scrollbar pb-2 touch-pan-x overscroll-x-contain">
+            {[
+              { name: t('products.allCategories'), Icon: LayoutGrid, slug: '' },
+              { name: t('categories.shoes'), Icon: SportShoe, slug: 'shoes' },
+              { name: t('categories.apparel'), Icon: Shirt, slug: 'apparel' },
+              { name: t('categories.accessories'), Icon: Backpack, slug: 'accessories' },
+              { name: t('categories.fitness'), Icon: Dumbbell, slug: 'fitness' },
+              { name: t('categories.balls'), Icon: SoccerBallIcon, slug: 'balls' }
+            ].map((cat) => {
+              const isActive = selectedCategory === cat.slug
+              return (
+                <button 
+                  key={cat.slug || 'all'} 
+                  onClick={() => {
+                    setSelectedCategory(cat.slug)
+                    setPage(1)
+                  }}
+                  className={`group shrink-0 select-none flex flex-col items-center justify-center w-[72px] h-[80px] rounded-2xl transition-colors ${
+                    isActive 
+                      ? 'bg-[#1a2b4c] border border-[#1687FF]/50 shadow-[0_0_15px_rgba(22,135,255,0.15)]' 
+                      : 'bg-[#0a1120] border border-white/5 hover:bg-white/10'
+                  }`}
+                >
+                  <div className={`mb-1.5 transition-colors ${isActive ? 'text-[#1687FF]' : 'text-white/60 group-hover:text-white/90'}`}>
+                    <cat.Icon className="w-6 h-6 md:w-8 md:h-8" strokeWidth={1.5} />
+                  </div>
+                  <span className={`text-[10px] font-semibold ${isActive ? 'text-white' : 'text-slate-400'}`}>
+                    {cat.name}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+
           <div className="flex flex-col gap-4 md:flex-row">
             <Input
-              placeholder="Search products..."
+              placeholder={t('products.searchPlaceholder')}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="flex-1"
+              className="flex-1 theme-input placeholder:text-slate-500 bg-[#020817]/80 border-white/10 text-white focus:border-[#1687FF]"
             />
-            <select
-              value={selectedCategory}
-              onChange={(e) => setSelectedCategory(e.target.value)}
-              className="rounded-md border border-border bg-card px-4 py-2 text-foreground"
-            >
-              <option value="">All Categories</option>
-              {categories.map((cat) => (
-                <option key={cat.slug} value={cat.slug}>
-                  {cat.name}
-                </option>
-              ))}
-            </select>
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
-              className="rounded-md border border-border bg-card px-4 py-2 text-foreground"
+              className="rounded-xl border border-white/10 bg-[#020817] px-4 py-2 text-white outline-none focus:border-[#1687FF] text-sm"
             >
-              <option value="newest">Newest</option>
-              <option value="price-low">Price: Low to High</option>
-              <option value="price-high">Price: High to Low</option>
-              <option value="featured">Featured</option>
+              <option value="newest">{t('products.sortNewest')}</option>
+              <option value="price-low">{t('products.sortPriceLow')}</option>
+              <option value="price-high">{t('products.sortPriceHigh')}</option>
             </select>
           </div>
         </div>
@@ -141,84 +174,87 @@ export default function ProductsPage() {
         {/* Products Grid */}
         {loading ? (
           <div className="flex items-center justify-center py-12">
-            <p className="text-muted-foreground">Loading products...</p>
+            <p className="theme-text-muted">{t('products.loadingProducts') || 'جارٍ تحميل المنتجات'}</p>
           </div>
         ) : products.length === 0 ? (
           <div className="flex items-center justify-center py-12">
-            <p className="text-muted-foreground">No products found</p>
+            <p className="theme-text-muted">{t('products.noProducts')}</p>
           </div>
         ) : (
           <>
             <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {products.map((product) => (
-                <Link key={product.id} href={`/products/${product.slug}`}>
-                  <div className="group cursor-pointer overflow-hidden rounded-lg border border-border bg-card transition-all hover:shadow-lg">
-                    <div className="relative aspect-square overflow-hidden bg-muted">
-                      {product.image_url ? (
-                        <img
-                          src={product.image_url}
-                          alt={product.name}
-                          className="h-full w-full object-cover transition-transform group-hover:scale-105"
-                        />
-                      ) : (
-                        <div className="flex h-full items-center justify-center text-muted-foreground">
-                          No Image
+              {products.map((product) => {
+                const isDiscounted = product.originalPrice && Number(product.originalPrice) > Number(product.price);
+                return (
+                  <Link key={product.id} href={`/products/${product.slug}`} className="group relative flex flex-col rounded-[1.25rem] bg-[#0a1120] border border-white/10 shadow-lg overflow-hidden hover:border-[#1687FF]/50 transition-colors cursor-pointer select-none">
+                    <div className="relative aspect-square w-full flex items-center justify-center bg-transparent p-4">
+                      {/* Badge */}
+                      {isDiscounted && (
+                        <div className="absolute top-3 right-3 z-10 bg-[#1687FF] text-white text-[11px] font-black px-2 py-1 rounded shadow-[0_0_12px_rgba(22,135,255,0.5)]">
+                          -{Math.round(((Number(product.originalPrice) - Number(product.price)) / Number(product.originalPrice)) * 100)}%
                         </div>
                       )}
-                      {product.featured && (
-                        <div className="absolute right-2 top-2 rounded-md bg-accent px-2 py-1 text-xs font-semibold text-accent-foreground">
-                          Featured
-                        </div>
-                      )}
+
+                      <ProductImage
+                        src={product.imageUrl}
+                        alt={product.name}
+                        className="object-contain transition-transform duration-300 md:group-hover:scale-110 drop-shadow-xl p-2"
+                      />
                     </div>
 
-                    <div className="p-4">
-                      <h3 className="mb-2 line-clamp-2 text-sm font-semibold text-foreground group-hover:text-accent">
+                    <div className="p-4 flex flex-col flex-1 border-t border-white/5 bg-gradient-to-b from-transparent to-black/20">
+                      <h3 className="mb-1 line-clamp-1 text-sm font-bold text-white group-hover:text-[#1687FF] transition-colors duration-200">
                         {product.name}
                       </h3>
-                      <p className="mb-4 line-clamp-2 text-xs text-muted-foreground">{product.description}</p>
+                      <p className="mb-3 line-clamp-1 text-[11px] text-slate-400">{product.category?.name || product.description}</p>
 
-                      <div className="mb-4 flex items-center gap-2">
-                        <span className="text-lg font-bold text-foreground">
-                          ${displayPrice(product).toFixed(2)}
-                        </span>
-                        {product.sale_price && (
-                          <span className="text-sm text-muted-foreground line-through">
-                            ${product.base_price.toFixed(2)}
+                      <div className="mt-auto flex flex-col gap-1 mb-3">
+                        {isDiscounted && (
+                          <span className="text-[12px] font-medium text-slate-500 relative inline-block w-fit after:absolute after:left-0 after:top-1/2 after:h-[1.5px] after:w-full after:-translate-y-1/2 after:bg-[#1687FF] after:rounded-full">
+                            {formatDZD(Number(product.originalPrice))}
                           </span>
                         )}
+                        <span className="text-xl font-black text-[#1687FF] drop-shadow-[0_0_10px_rgba(22,135,255,0.4)]">
+                          {formatDZD(Number(product.price))}
+                        </span>
                       </div>
 
                       <Button
                         size="sm"
-                        className="w-full"
+                        className={`w-full font-bold rounded-full h-10 ${inStock(product) ? 'bg-[#1687FF] hover:bg-[#2563EB] text-white shadow-[0_0_15px_rgba(22,135,255,0.3)] hover:shadow-[0_0_20px_rgba(22,135,255,0.5)]' : 'bg-white/10 text-slate-400'}`}
                         disabled={!inStock(product)}
-                        variant={inStock(product) ? 'default' : 'outline'}
                       >
-                        {inStock(product) ? 'View' : 'Out of Stock'}
+                        {inStock(product) ? (
+                          <div className="flex items-center justify-center gap-2">
+                            <ShoppingCart className="w-4 h-4" />
+                            <span>{t('products.btnView') || 'عرض المنتج'}</span>
+                          </div>
+                        ) : t('products.btnOutOfStock')}
                       </Button>
                     </div>
-                  </div>
-                </Link>
-              ))}
+                  </Link>
+                );
+              })}
             </div>
 
             {/* Pagination */}
-            <div className="mt-8 flex items-center justify-center gap-4">
+            <div className="mt-12 flex items-center justify-center gap-4">
               <Button
                 onClick={() => setPage(Math.max(1, page - 1))}
                 disabled={page === 1}
                 variant="outline"
+                className="border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white rounded-full px-6"
               >
                 Previous
               </Button>
-              <span className="text-muted-foreground">
+              <span className="text-slate-400 text-sm font-medium">
                 Page {page} of {totalPages}
               </span>
               <Button
                 onClick={() => setPage(Math.min(totalPages, page + 1))}
                 disabled={page === totalPages}
                 variant="outline"
+                className="border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white rounded-full px-6"
               >
                 Next
               </Button>
@@ -226,6 +262,17 @@ export default function ProductsPage() {
           </>
         )}
       </div>
+
+      <MobileBottomNav />
+      <Footer />
     </div>
+  )
+}
+
+export default function ProductsPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#020817]" />}>
+      <ProductsPageContent />
+    </Suspense>
   )
 }

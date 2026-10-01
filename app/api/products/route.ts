@@ -1,9 +1,8 @@
-import { createClient } from '@/lib/supabase/server'
+import * as db from '@/lib/data'
 import { NextRequest, NextResponse } from 'next/server'
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient()
     const searchParams = request.nextUrl.searchParams
     const category = searchParams.get('category')
     const search = searchParams.get('search')
@@ -11,63 +10,52 @@ export async function GET(request: NextRequest) {
     const page = parseInt(searchParams.get('page') || '1')
     const pageSize = 12
 
-    let query = supabase
-      .from('products')
-      .select(
-        `
-        id,
-        name,
-        slug,
-        description,
-        base_price,
-        sale_price,
-        image_url,
-        featured,
-        category_id,
-        categories(name, slug),
-        product_variants(
-          id,
-          sku,
-          price,
-          quantity_in_stock,
-          size_id,
-          color_id,
-          material_id,
-          sizes(name),
-          colors(name, hex_code),
-          materials(name)
-        )
-      `,
-        { count: 'exact' }
-      )
-      .eq('active', true)
+    let where: any = { isActive: true }
 
     if (category) {
-      query = query.eq('categories.slug', category)
+      where.category = { slug: category }
     }
 
     if (search) {
-      query = query.or(`name.ilike.%${search}%,description.ilike.%${search}%`)
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } }
+      ]
     }
 
+    if (searchParams.get('discount') === 'true') {
+      where.originalPrice = { not: null }
+    }
+
+    let orderBy: any = {}
     if (sortBy === 'price-low') {
-      query = query.order('base_price', { ascending: true })
+      orderBy = { price: 'asc' }
     } else if (sortBy === 'price-high') {
-      query = query.order('base_price', { ascending: false })
+      orderBy = { price: 'desc' }
     } else if (sortBy === 'newest') {
-      query = query.order('created_at', { ascending: false })
-    } else if (sortBy === 'featured') {
-      query = query.eq('featured', true).order('created_at', { ascending: false })
+      orderBy = { createdAt: 'desc' }
+    } else {
+      orderBy = { createdAt: 'desc' }
     }
 
-    const { data, error, count } = await query.range((page - 1) * pageSize, page * pageSize - 1)
+    const { products, count } = await db.getProducts({
+      where,
+      orderBy,
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      include: {
+        category: true
+      }
+    })
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    // If discount flag is on, filter out any products where originalPrice <= price
+    let finalProducts = products
+    if (searchParams.get('discount') === 'true') {
+      finalProducts = products.filter(p => p.originalPrice && Number(p.originalPrice) > Number(p.price))
     }
 
     return NextResponse.json({
-      products: data || [],
+      products: finalProducts || [],
       total: count || 0,
       page,
       pageSize,

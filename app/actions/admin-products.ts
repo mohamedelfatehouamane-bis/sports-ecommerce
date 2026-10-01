@@ -1,124 +1,38 @@
 'use server'
 
-import { prisma } from '@/lib/db'
-
-export interface ProductVariantInput {
-  id?: string // For existing variants
-  colorId: string
-  sizeId?: string | null
-  stockCount: number
-  priceOffset: number // Price adjustment from base price
-}
-
-export interface ProductImageInput {
-  id?: string // For existing images
-  url: string
-  colorLinked?: string | null // Color ID this image is linked to
-}
+import * as db from '@/lib/data'
+import { deleteMediaAction } from './media'
+import { requireAdmin } from '@/lib/admin-auth-helper'
 
 export interface UpsertProductInput {
-  id?: string // If provided, update; otherwise create
-  title: string
-  description: string
-  basePrice: number
-  categoryId: string
-  variants: ProductVariantInput[]
-  images: ProductImageInput[]
+  id?: string
+  name: string
+  description?: string | null
+  price: number
+  originalPrice?: number | null
+  stock: number
+  lowStockThreshold?: number
+  categoryId?: string
+  newCategoryName?: string
+  isActive: boolean
+  imageUrl?: string | null
+  availableSizes?: string[]
+  variants?: {
+    id?: string
+    size: string | null
+    color: string | null
+    quantity: number
+  }[]
 }
 
-/**
- * Atomic upsert operation for products with nested variants and images
- * Uses Prisma $transaction to ensure consistency
- */
 export async function upsertProduct(input: UpsertProductInput) {
   try {
-    const result = await prisma.$transaction(async (tx) => {
-      const slug = input.title
-        .toLowerCase()
-        .replace(/[^\w\s-]/g, '')
-        .replace(/\s+/g, '-')
-        .replace(/-+/g, '-')
+    await requireAdmin()
+    const result = await db.upsertProduct(input)
 
-      // Check if slug already exists (if creating new product)
-      if (!input.id) {
-        const existing = await tx.product.findUnique({
-          where: { slug },
-        })
-        if (existing) {
-          throw new Error(`Product with slug "${slug}" already exists`)
-        }
-      }
-
-      if (input.id) {
-        // UPDATE existing product
-        // 1. Update base product
-        const product = await tx.product.update({
-          where: { id: input.id },
-          data: {
-            name: input.title,
-            slug,
-            description: input.description,
-            basePrice: new Decimal(input.basePrice),
-          },
-        })
-
-        // 2. Delete existing variants (to avoid orphans and duplicate SKUs)
-        await tx.productVariant.deleteMany({
-          where: { productId: input.id },
-        })
-
-        // 3. Create new variants
-        if (input.variants.length > 0) {
-          await tx.productVariant.createMany({
-            data: input.variants.map((v) => ({
-              productId: input.id,
-              colorId: v.colorId,
-              sizeId: v.sizeId || null,
-              quantityInStock: v.stockCount,
-              price: new Decimal(input.basePrice + v.priceOffset),
-              sku: generateSKU(input.title, v.colorId, v.sizeId),
-            })),
-          })
-        }
-
-        return product
-      } else {
-        // CREATE new product
-        // 1. Create product with nested variants
-        const product = await tx.product.create({
-          data: {
-            name: input.title,
-            slug,
-            description: input.description,
-            basePrice: new Decimal(input.basePrice),
-            categoryId: input.categoryId,
-            variants: {
-              createMany: {
-                data: input.variants.map((v) => ({
-                  colorId: v.colorId,
-                  sizeId: v.sizeId || null,
-                  quantityInStock: v.stockCount,
-                  price: new Decimal(input.basePrice + v.priceOffset),
-                  sku: generateSKU(input.title, v.colorId, v.sizeId),
-                })),
-              },
-            },
-          },
-          include: {
-            variants: true,
-          },
-        })
-
-        return product
-      }
-    })
-
-    return {
-      success: true,
-      product: result,
-      message: input.id ? 'Product updated successfully' : 'Product created successfully',
-    }
+    return { success: true, product: result, message: input.id ? 'Product updated successfully' : 'Product created successfully', }
   } catch (error) {
+    console.error('upsertProduct error:', error)
     const message = error instanceof Error ? error.message : 'Failed to upsert product'
     return {
       success: false,
@@ -128,36 +42,28 @@ export async function upsertProduct(input: UpsertProductInput) {
 }
 
 /**
- * Generate a consistent SKU from product title, color, and size
- * Format: PROD-COLOR-SIZE (e.g., PRO-RUNNER-BLK-M)
- */
-function generateSKU(title: string, colorId: string, sizeId?: string | null): string {
-  const titlePart = title
-    .split(' ')
-    .map((w) => w.substring(0, 2).toUpperCase())
-    .join('')
-    .substring(0, 6)
-
-  const colorPart = colorId.substring(0, 3).toUpperCase()
-  const sizePart = sizeId ? sizeId.substring(0, 3).toUpperCase() : 'STD'
-
-  return `${titlePart}-${colorPart}-${sizePart}`.substring(0, 20)
-}
-
-/**
- * Delete a product (cascades to variants, images, cart items, order items)
+ * Delete a product (cascades to order items)
  */
 export async function deleteProduct(productId: string) {
   try {
-    await prisma.product.delete({
-      where: { id: productId },
-    })
+    await requireAdmin()
+    
+    const product = await db.deleteProduct(productId)
+    if (product?.imageUrl) {
+      try {
+        const fileName = product.imageUrl.substring(product.imageUrl.lastIndexOf('/') + 1)
+        await deleteMediaAction(fileName)
+      } catch (err) {
+        console.error('Failed to delete storage file on product delete:', product.imageUrl, err)
+      }
+    }
 
     return {
       success: true,
       message: 'Product deleted successfully',
     }
   } catch (error) {
+
     const message = error instanceof Error ? error.message : 'Failed to delete product'
     return {
       success: false,
@@ -165,3 +71,103 @@ export async function deleteProduct(productId: string) {
     }
   }
 }
+
+/**
+ * Bulk delete products
+ */
+export async function bulkDeleteProducts(productIds: string[]) {
+  try {
+    await requireAdmin()
+    const deletedProducts = await db.deleteManyProducts(productIds)
+
+    for (const product of deletedProducts) {
+      if (product.imageUrl) {
+        try {
+          const fileName = product.imageUrl.substring(product.imageUrl.lastIndexOf('/') + 1)
+          await deleteMediaAction(fileName)
+        } catch (err) {
+          console.error('Failed to delete storage file on bulk delete:', product.imageUrl, err)
+        }
+      }
+    }
+    return {
+      success: true,
+      message: 'Selected products deleted successfully',
+    }
+  } catch (error) {
+
+    const message = error instanceof Error ? error.message : 'Failed to bulk delete products'
+    return {
+      success: false,
+      error: message,
+    }
+  }
+}
+
+/**
+ * Bulk activate/deactivate products
+ */
+export async function bulkToggleProductsActive(productIds: string[], isActive: boolean) {
+  try {
+    await requireAdmin()
+    await db.updateManyProducts(productIds, { isActive })
+    return {
+      success: true,
+      message: `Selected products ${isActive ? 'activated' : 'deactivated'} successfully`,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to bulk update products'
+    return {
+      success: false,
+      error: message,
+    }
+  }
+}
+
+export async function getProducts() {
+  try {
+    await requireAdmin()
+    const { products } = await db.getProducts({
+      include: {
+        category: true
+      },
+      orderBy: { createdAt: 'desc' }
+    })
+    return products
+  } catch (error) {
+    console.error('Error fetching products:', error)
+    return []
+  }
+}
+
+export async function getProduct(productId: string) {
+  try {
+    await requireAdmin()
+    const product = await db.getProduct(productId, { variants: true })
+    return product ? product : null
+  } catch (error) {
+    console.error('Error fetching product:', error)
+    return null
+  }
+}
+
+/**
+ * Lookup helper actions
+ */
+export async function getCategories() {
+  try {
+    await requireAdmin()
+    const categories = await db.getCategories({
+      orderBy: { name: 'asc' }
+    })
+    
+    return categories.map(c => ({
+      ...c,
+      displayName: c.name
+    }))
+  } catch (error) {
+    console.error('Error fetching categories:', error)
+    return []
+  }
+}
+

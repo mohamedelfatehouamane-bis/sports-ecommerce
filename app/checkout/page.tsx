@@ -1,21 +1,22 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import Link from 'next/link'
-import { Button } from '@/components/ui/button'
 import { useRouter } from 'next/navigation'
 import { GuestCheckoutForm } from '@/components/checkout/guest-checkout-form'
-import { formatDZD } from '@/lib/utils/currency'
+import { Header } from '@/components/Header'
+import { Footer } from '@/components/Footer'
+import { Loader2 } from 'lucide-react'
+import { useTranslation } from '@/components/language-context'
 
 export const dynamic = 'force-dynamic'
 
 interface CartItem {
   id: string
-  variantId: string
+  productId: string
   productName: string
   price: number
   quantity: number
-  sku: string
+  size?: string
 }
 
 interface CartData {
@@ -26,6 +27,7 @@ interface CartData {
 }
 
 export default function CheckoutPage() {
+  const { t } = useTranslation()
   const [cart, setCart] = useState<CartData | null>(null)
   const [loading, setLoading] = useState(true)
   const router = useRouter()
@@ -43,18 +45,25 @@ export default function CheckoutPage() {
         }
 
         // Calculate totals
-        const subtotal = data.items.reduce((sum: number, item: CartItem) => sum + item.price * item.quantity, 0)
-        const tax = subtotal * 0.19 // 19% VAT for Algeria
-        const total = subtotal + tax + 150 // 150 DZD shipping
+        const subtotal = data.items.reduce((sum: number, item: any) => sum + item.product.price * item.quantity, 0)
+        const tax = 0
+        const total = subtotal
 
         setCart({
-          items: data.items,
+          items: data.items.map((item: any) => ({
+            id: item.id,
+            productId: item.product.id,
+            productName: item.product.name,
+            price: item.product.price,
+            quantity: item.quantity,
+            size: item.size,
+          })),
           subtotal,
           tax,
           total,
         })
       } catch (error) {
-        console.error('[v0] Error fetching cart:', error)
+        console.error('Error fetching cart:', error)
         router.push('/cart')
       } finally {
         setLoading(false)
@@ -64,38 +73,29 @@ export default function CheckoutPage() {
     fetchCart()
   }, [router])
 
-  if (loading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background">
-        <p className="text-muted-foreground">Loading checkout...</p>
-      </div>
-    )
-  }
-
-  if (!cart || cart.items.length === 0) {
-    return null
-  }
-
   return (
-    <div className="min-h-screen bg-background">
-      {/* Navigation */}
-      <nav className="border-b border-border bg-card shadow-sm">
-        <div className="flex h-16 items-center justify-between px-6">
-          <h1 className="text-xl font-bold">Sports Shop</h1>
-          <Link href="/products">
-            <Button variant="outline">Continue Shopping</Button>
-          </Link>
-        </div>
-      </nav>
+    <div className="min-h-screen bg-transparent text-white flex flex-col">
+      <Header />
 
-      <main className="mx-auto max-w-7xl px-6 py-12">
-        <GuestCheckoutForm
-          cartItems={cart.items}
-          subtotal={cart.subtotal}
-          tax={cart.tax}
-          total={cart.total}
-        />
+      <main className="flex-1 mx-auto max-w-7xl w-full px-6 py-12">
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-24 border border-white/5 bg-white/5 backdrop-blur-md rounded-2xl">
+            <Loader2 className="h-10 w-10 text-[#1687FF] animate-spin mb-4" />
+            <p className="text-slate-400 text-sm">{t('checkout.loadingCheckout')}</p>
+          </div>
+        ) : !cart ? (
+          null
+        ) : (
+          <GuestCheckoutForm
+            cartItems={cart.items}
+            subtotal={cart.subtotal}
+            tax={cart.tax}
+            total={cart.total}
+          />
+        )}
       </main>
+
+      <Footer />
     </div>
   )
 }
